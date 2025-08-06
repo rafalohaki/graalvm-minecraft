@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * *'  # Run daily at 2 AM UTC
   workflow_dispatch:
 
 jobs:
@@ -17,9 +17,15 @@ jobs:
             tag: "24"
             service: "graalvm-runtime-24"
             latest: true
+          # Ready for expansion:
+          # - dockerfile: "Dockerfile21"
+          #   tag: "21"
+          #   service: "graalvm-runtime-21"
+          #   latest: false
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -30,21 +36,84 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build with docker compose (v2 syntax)
+      - name: Build with docker compose
         run: |
+          echo "🔨 Building service: ${{ matrix.variant.service }}"
           docker compose build ${{ matrix.variant.service }}
 
-      - name: Tag and push
+      - name: Determine and validate image name
         run: |
-          # Get the built image name from docker compose
-          image_name=$(docker compose config | grep "image:" | grep "${{ matrix.variant.service }}" -A 1 | tail -1 | sed 's/.*image: //')
+          echo "🔍 Determining image name..."
           
-          # Tag for Docker Hub
-          docker tag $image_name rafalohaki/graalvm-minecraft:${{ matrix.variant.tag }}
-          docker push rafalohaki/graalvm-minecraft:${{ matrix.variant.tag }}
+          # Method 1: Extract from docker-compose.yml directly
+          image_name=$(awk '/^[[:space:]]*'${{ matrix.variant.service }}':/{flag=1; next} flag && /^[[:space:]]*image:/{print $2; exit}' docker-compose.yml)
+          echo "Method 1 (from compose): '$image_name'"
           
-          # Tag as latest if specified
-          if [ "${{ matrix.variant.latest }}" = "true" ]; then
-            docker tag $image_name rafalohaki/graalvm-minecraft:latest
-            docker push rafalohaki/graalvm-minecraft:latest
+          # Method 2: Fallback - find built image by pattern
+          if [ -z "$image_name" ]; then
+            image_name=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "(graalvm|enhanced)" | head -1)
+            echo "Method 2 (by pattern): '$image_name'"
           fi
+          
+          # Method 3: Hardcoded fallback based on service name
+          if [ -z "$image_name" ]; then
+            case "${{ matrix.variant.service }}" in
+              "graalvm-runtime-24")
+                image_name="graalvm-enhanced-24"
+                ;;
+              *)
+                image_name="graalvm-enhanced-${{ matrix.variant.tag }}"
+                ;;
+            esac
+            echo "Method 3 (hardcoded): '$image_name'"
+          fi
+          
+          # Final validation
+          if [ -z "$image_name" ]; then
+            echo "❌ Could not determine image name!"
+            echo "Available images:"
+            docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+            exit 1
+          fi
+          
+          # Verify image exists
+          if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${image_name}$"; then
+            echo "❌ Image $image_name does not exist!"
+            echo "Available images:"
+            docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+            exit 1
+          fi
+          
+          echo "✅ Using image: $image_name"
+          echo "IMAGE_NAME=$image_name" >> $GITHUB_ENV
+
+      - name: Tag and push to Docker Hub
+        run: |
+          echo "🏷️ Tagging and pushing: $IMAGE_NAME"
+          
+          # Tag for Docker Hub with version
+          docker tag "$IMAGE_NAME" "rafalohaki/graalvm-minecraft:${{ matrix.variant.tag }}"
+          echo "✅ Tagged as: rafalohaki/graalvm-minecraft:${{ matrix.variant.tag }}"
+          
+          # Push version tag
+          docker push "rafalohaki/graalvm-minecraft:${{ matrix.variant.tag }}"
+          echo "✅ Pushed: rafalohaki/graalvm-minecraft:${{ matrix.variant.tag }}"
+          
+          # Tag and push as latest if specified
+          if [ "${{ matrix.variant.latest }}" = "true" ]; then
+            docker tag "$IMAGE_NAME" "rafalohaki/graalvm-minecraft:latest"
+            docker push "rafalohaki/graalvm-minecraft:latest"
+            echo "✅ Tagged and pushed as latest"
+          fi
+
+      - name: Test pushed image
+        run: |
+          echo "🧪 Testing pushed image..."
+          docker run --rm rafalohaki/graalvm-minecraft:${{ matrix.variant.tag }} java -version
+          echo "✅ Image test successful!"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up local images..."
+          docker system prune -f

@@ -17,11 +17,6 @@ jobs:
             tag: "24"
             service: "graalvm-runtime-24"
             latest: true
-          # Ready for expansion:
-          # - dockerfile: "Dockerfile21"
-          #   tag: "21"
-          #   service: "graalvm-runtime-21"
-          #   latest: false
 
     steps:
       - name: Checkout repository
@@ -46,8 +41,24 @@ jobs:
           echo "🔍 Determining image name..."
           
           # Method 1: Extract from docker-compose.yml directly
-          image_name=$(awk '/^[[:space:]]*'${{ matrix.variant.service }}':/{flag=1; next} flag && /^[[:space:]]*image:/{print $2; exit}' docker-compose.yml)
-          echo "Method 1 (from compose): '$image_name'"
+          base_image_name=$(awk '/^[[:space:]]*'${{ matrix.variant.service }}':/{flag=1; next} flag && /^[[:space:]]*image:/{print $2; exit}' docker-compose.yml)
+          echo "Method 1 (from compose): '$base_image_name'"
+          
+          # Handle different tag formats
+          if [ -n "$base_image_name" ]; then
+            # Check if image has explicit tag
+            if [[ "$base_image_name" == *":"* ]]; then
+              image_name="$base_image_name"
+            else
+              # Try both with and without :latest tag
+              if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${base_image_name}:latest$"; then
+                image_name="${base_image_name}:latest"
+              elif docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${base_image_name}$"; then
+                image_name="$base_image_name"
+              fi
+            fi
+            echo "Resolved image name: '$image_name'"
+          fi
           
           # Method 2: Fallback - find built image by pattern
           if [ -z "$image_name" ]; then
@@ -55,36 +66,68 @@ jobs:
             echo "Method 2 (by pattern): '$image_name'"
           fi
           
-          # Method 3: Hardcoded fallback based on service name
+          # Method 3: Direct repository search
+          if [ -z "$image_name" ]; then
+            # Look for images with repository name containing expected pattern
+            repo_name=$(docker images --format "{{.Repository}}" | grep -E "(graalvm|enhanced)" | head -1)
+            if [ -n "$repo_name" ]; then
+              tag_name=$(docker images --format "{{.Repository}} {{.Tag}}" | grep "^${repo_name} " | head -1 | awk '{print $2}')
+              image_name="${repo_name}:${tag_name}"
+              echo "Method 3 (repo search): '$image_name'"
+            fi
+          fi
+          
+          # Method 4: Hardcoded fallback based on service name
           if [ -z "$image_name" ]; then
             case "${{ matrix.variant.service }}" in
               "graalvm-runtime-24")
-                image_name="graalvm-enhanced-24"
+                # Try both variants
+                if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^graalvm-minecraft-24:latest$"; then
+                  image_name="graalvm-minecraft-24:latest"
+                elif docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^graalvm-enhanced-24:latest$"; then
+                  image_name="graalvm-enhanced-24:latest"
+                else
+                  image_name="graalvm-enhanced-24"
+                fi
                 ;;
               *)
                 image_name="graalvm-enhanced-${{ matrix.variant.tag }}"
                 ;;
             esac
-            echo "Method 3 (hardcoded): '$image_name'"
+            echo "Method 4 (hardcoded): '$image_name'"
           fi
+          
+          # Debug: Show all available images
+          echo "🔍 All available images:"
+          docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
           
           # Final validation
           if [ -z "$image_name" ]; then
             echo "❌ Could not determine image name!"
-            echo "Available images:"
-            docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
             exit 1
           fi
           
-          # Verify image exists
-          if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${image_name}$"; then
-            echo "❌ Image $image_name does not exist!"
-            echo "Available images:"
-            docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
-            exit 1
+          # Verify image exists (handle both formats)
+          if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${image_name}$"; then
+            echo "✅ Found image: $image_name"
+          else
+            # Try without explicit tag if it has one
+            if [[ "$image_name" == *":"* ]]; then
+              base_name=$(echo "$image_name" | cut -d':' -f1)
+              if docker images --format "{{.Repository}}" | grep -q "^${base_name}$"; then
+                echo "✅ Found repository: $base_name (will use with default tag)"
+                image_name="$base_name"
+              else
+                echo "❌ Image $image_name does not exist!"
+                exit 1
+              fi
+            else
+              echo "❌ Image $image_name does not exist!"
+              exit 1
+            fi
           fi
           
-          echo "✅ Using image: $image_name"
+          echo "✅ Final image name: $image_name"
           echo "IMAGE_NAME=$image_name" >> $GITHUB_ENV
 
       - name: Tag and push to Docker Hub

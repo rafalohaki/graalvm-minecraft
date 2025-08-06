@@ -1,0 +1,29 @@
+#container-registry.oracle.com/graalvm/jdk:24
+
+services:
+  # Obecny wariant
+  graalvm-runtime-24:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile24
+    image: graalvm-minecraft-24
+
+  # Gotowe do rozszerzenia - odkomentuj gdy będziesz miał więcej Dockerfile'ów
+  
+  # graalvm-runtime-21:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfiles/Dockerfile21
+  #   image: graalvm-minecraft-21
+
+  # graalvm-runtime-24-native:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfiles/Dockerfile24-native
+  #   image: graalvm-minecraft-24-native
+
+  # graalvm-runtime-24-minimal:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfiles/Dockerfile24-minimal
+  #   image: graalvm-minecraft-24-minimal

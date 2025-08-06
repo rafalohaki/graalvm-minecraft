@@ -1,0 +1,46 @@
+FROM container-registry.oracle.com/graalvm/jdk:24
+
+# Metadata dla uniwersalnego base image
+LABEL maintainer="rafalohaki@gmail.com" \
+      description="Minecraft Oracle GraalVM JDK 24 base image with fonts and common utilities" \
+      version="2.0.0" \
+      java.version="24" \
+      graalvm.type="enterprise" \
+      base.type="universal" \
+      org.opencontainers.image.source="https://github.com/rafalohaki/graalvm-minecraft" \
+      org.opencontainers.image.licenses="MIT"
+
+# Instalacja podstawowych narzędzi i bibliotek (Oracle Linux)
+RUN microdnf update -y && \
+    microdnf install -y \
+        # WYMAGANE dla Paper 1.21.7 - fonty dla GUI/map rendering
+        freetype \
+        freetype-devel \
+        fontconfig \
+        fontconfig-devel \
+        dejavu-sans-fonts \
+        dejavu-serif-fonts \
+        liberation-fonts \
+    && microdnf clean all \
+    && rm -rf /var/cache/microdnf/* \
+    && fc-cache -fv
+
+
+# Security: Non-root user dla bezpieczeństwa
+RUN groupadd -r appuser --gid=1000 && \
+    useradd -r -g appuser --uid=1000 -s /bin/bash -m appuser
+
+# Workspace directory
+WORKDIR /app
+RUN chown -R appuser:appuser /app && \
+    chmod 755 /app
+
+# Health check dla monitorowania
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD java -version || exit 1
+
+# Switch to non-root user
+USER appuser
+
+# Default command
+CMD ["java", "-version"]
